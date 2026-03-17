@@ -274,6 +274,8 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
         max_x_occupied = max([float(item.position[0]) + float(item.get_dimension()[0]) for item in fitted_items])
     remaining_x = cx - max_x_occupied
 
+    legend_added = set()
+
     for item in fitted_items:
         ref_name = item.name.split(" #")[0]
         color = color_map.get(ref_name, '#333333')
@@ -288,7 +290,12 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
         emp_status = "✅ Yes" if getattr(item, 'stackable', True) else "❌ NO"
         hovertext = f"<b>{item.name}</b><br>Dim : {w}x{h}x{d} cm<br>Stackable : {emp_status}"
 
-        fig.add_trace(go.Mesh3d(x=x_coords, y=y_coords, z=z_coords, i=i_faces, j=j_faces, k=k_faces, color=color, opacity=1.0, flatshading=True, name=ref_name, hoverinfo="text", text=hovertext, showscale=False))
+        # On affiche la légende seulement pour le premier bloc d'un produit pour éviter les doublons
+        show_leg = ref_name not in legend_added
+        if show_leg:
+            legend_added.add(ref_name)
+
+        fig.add_trace(go.Mesh3d(x=x_coords, y=y_coords, z=z_coords, i=i_faces, j=j_faces, k=k_faces, color=color, opacity=1.0, flatshading=True, name=ref_name, hoverinfo="text", text=hovertext, showscale=False, showlegend=show_leg, legendgroup=ref_name))
 
         all_x_edges.extend([x, x+w, x+w, x, x, None, x, x+w, x+w, x, x, None, x, x, None, x+w, x+w, None, x+w, x+w, None, x, x, None])
         all_y_edges.extend([y, y, y+h, y+h, y, None, y, y, y+h, y+h, y, None, y, y, None, y, y, None, y+h, y+h, None, y+h, y+h, None])
@@ -333,7 +340,7 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
             camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
         ), 
         margin=dict(l=0, r=0, b=0, t=40), 
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+        legend=dict(title="Marchandises", yanchor="top", y=0.99, xanchor="left", x=1.05)
     )
     return fig
 

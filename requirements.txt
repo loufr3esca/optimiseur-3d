@@ -2,3 +2,4 @@ streamlit
 py3dbp
 plotly
 pandas
+firebase-admin

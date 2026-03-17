@@ -170,6 +170,13 @@ def custom_pack_item_to_bin(bin_obj, item):
                         if ox > 0 and oy > 0: score += float(ox * oy) * 2
 
                 score -= (float(pivot[0]) + float(pivot[1]) + float(pivot[2])) * 0.1
+                
+                # --- NEW HEURISTIC RULE for 80cm ---
+                # h is the dimension along the Y axis (width of the container).
+                # If an edge is 80cm and the container fits at least 3 (>= 240), give a massive bonus to force rows of 3.
+                if abs(float(h) - 80.0) <= 1.0 and float(bin_obj.height) >= 240.0:
+                    score += 50000.0 
+                
                 if score > best_score:
                     best_score, best_pivot, best_rot = score, pivot, rot
                     
@@ -332,7 +339,6 @@ with col1:
     # Defaults and backward compatibility for existing French database entries
     d_ref, d_l, d_h = "", 120.0, 100.0
     d_w, d_weight = 80.0, 500.0
-    d_rot, d_stack = 1, 0
     
     if selected_preset != "-- New product --":
         prod = st.session_state.product_lib[selected_preset]
@@ -342,12 +348,21 @@ with col1:
         d_h = float(prod.get("H", 100.0))
         d_weight = float(prod.get("Weight", prod.get("Poids", 500.0))) # Fallback for old "Poids"
         
-        rot_raw = prod.get("Rotation", "Horizontal")
-        rot_en = {"Aucune": "None", "Horizontale": "Horizontal", "Toutes": "All"}.get(rot_raw, rot_raw)
-        d_rot = {"None": 0, "Horizontal": 1, "All": 2}.get(rot_en, 1)
+        rot_raw = prod.get("Rotation", "Auto (Horizontal)")
+        if rot_raw in ["Horizontale", "Horizontal", "Auto (Horizontal)"]: rot_en = "Auto (Horizontal)"
+        elif rot_raw in ["Toutes", "All", "Auto (All)"]: rot_en = "Auto (All)"
+        elif rot_raw in ["Aucune", "None", "Strict: L -> Length"]: rot_en = "Strict: L -> Length"
+        elif rot_raw == "Strict: W -> Length": rot_en = "Strict: W -> Length"
+        else: rot_en = "Auto (Horizontal)"
+        
+        rot_mapping = {"Auto (Horizontal)": 0, "Auto (All)": 1, "Strict: L -> Length": 2, "Strict: W -> Length": 3}
+        d_rot = rot_mapping.get(rot_en, 0)
         
         stack_raw = prod.get("Stackable", prod.get("Empilable", "Yes"))
         d_stack = 0 if stack_raw in ["Yes", "Oui"] else 1
+    else:
+        d_rot = 0
+        d_stack = 0
 
     with st.form("add_item_form", clear_on_submit=False):
         ref = st.text_input("Reference", value=d_ref)
@@ -362,7 +377,7 @@ with col1:
         h = ch.number_input("Height", min_value=1.0, value=d_h, step=1.0)
         weight = st.number_input("Unit Weight (kg)", min_value=0.1, value=d_weight, step=10.0)
         
-        rotation_policy = st.radio("Allowed Rotation", ["None", "Horizontal", "All"], index=d_rot, horizontal=True)
+        rotation_policy = st.radio("Allowed Rotation", ["Auto (Horizontal)", "Auto (All)", "Strict: L -> Length", "Strict: W -> Length"], index=d_rot, horizontal=False)
         stackable = st.radio("Stackable?", ["Yes", "No"], index=d_stack, horizontal=True)
         save_to_lib = st.checkbox("💾 Save product to library", value=False)
         submit = st.form_submit_button("Add to list")
@@ -438,8 +453,13 @@ with col1:
         lib_data = []
         for k, v in st.session_state.product_lib.items():
             # Apply backward compatibility here as well
-            rot_raw = v.get("Rotation", "Horizontal")
-            rot_en = {"Aucune": "None", "Horizontale": "Horizontal", "Toutes": "All"}.get(rot_raw, rot_raw)
+            rot_raw = v.get("Rotation", "Auto (Horizontal)")
+            if rot_raw in ["Horizontale", "Horizontal", "Auto (Horizontal)"]: rot_en = "Auto (Horizontal)"
+            elif rot_raw in ["Toutes", "All", "Auto (All)"]: rot_en = "Auto (All)"
+            elif rot_raw in ["Aucune", "None", "Strict: L -> Length"]: rot_en = "Strict: L -> Length"
+            elif rot_raw == "Strict: W -> Length": rot_en = "Strict: W -> Length"
+            else: rot_en = "Auto (Horizontal)"
+            
             stack_raw = v.get("Stackable", v.get("Empilable", "Yes"))
             stack_en = "Yes" if stack_raw in ["Yes", "Oui"] else "No"
             
@@ -459,7 +479,7 @@ with col1:
                 lib_df, 
                 num_rows="dynamic",
                 column_config={
-                    "Rotation": st.column_config.SelectboxColumn(options=["None", "Horizontal", "All"]),
+                    "Rotation": st.column_config.SelectboxColumn(options=["Auto (Horizontal)", "Auto (All)", "Strict: L -> Length", "Strict: W -> Length"]),
                     "Stackable": st.column_config.SelectboxColumn(options=["Yes", "No"])
                 },
                 key="lib_editor"
@@ -500,7 +520,7 @@ with col2:
         column_config={
             "Priority": st.column_config.NumberColumn(min_value=1, step=1),
             "Quantity": st.column_config.NumberColumn(min_value=1, step=1),
-            "Rotation": st.column_config.SelectboxColumn(options=["None", "Horizontal", "All"]),
+            "Rotation": st.column_config.SelectboxColumn(options=["Auto (Horizontal)", "Auto (All)", "Strict: L -> Length", "Strict: W -> Length"]),
             "Stackable": st.column_config.SelectboxColumn(options=["Yes", "No"]),
             "Color": st.column_config.TextColumn("Color (Hex Code)")
         }
@@ -521,8 +541,8 @@ with col2:
             impossible_items = set()
             for item in st.session_state.cargo_items:
                 h = float(item["Height"])
-                rot = item.get("Rotation", "Horizontal")
-                if rot in ["None", "Horizontal"] and h > c_props["H"]:
+                rot = item.get("Rotation", "Auto (Horizontal)")
+                if rot in ["Auto (Horizontal)", "Strict: L -> Length", "Strict: W -> Length"] and h > c_props["H"]:
                     impossible_items.add(item["Reference"])
             
             if impossible_items:
@@ -532,8 +552,13 @@ with col2:
                 sorted_cargo = sorted(st.session_state.cargo_items, key=lambda x: int(x.get("Priority", 999)))
                 all_items_to_pack = []
                 for item in sorted_cargo:
-                    rot_val = item.get("Rotation", "Horizontal")
-                    allowed_rot = [0] if rot_val == "None" else ([0, 1] if rot_val == "Horizontal" else [0, 1, 2, 3, 4, 5])
+                    rot_val = item.get("Rotation", "Auto (Horizontal)")
+                    if rot_val in ["Auto (Horizontal)", "Horizontal", "Horizontale"]: allowed_rot = [0, 1]
+                    elif rot_val in ["Auto (All)", "All", "Toutes"]: allowed_rot = [0, 1, 2, 3, 4, 5]
+                    elif rot_val in ["Strict: L -> Length", "None", "Aucune"]: allowed_rot = [0]
+                    elif rot_val == "Strict: W -> Length": allowed_rot = [1]
+                    else: allowed_rot = [0, 1]
+                    
                     is_stackable = item.get("Stackable", "Yes") == "Yes"
                     
                     h, weight = Decimal(str(item["Height"])), Decimal(str(item["Weight"]))
@@ -541,7 +566,7 @@ with col2:
                     l_dec, w_dec = Decimal(str(item["Length"])), Decimal(str(item["Width"]))
                     ref_name = item["Reference"]
 
-                    if is_stackable and rot_val in ["None", "Horizontal"]:
+                    if is_stackable and rot_val in ["Auto (Horizontal)", "Strict: L -> Length", "Strict: W -> Length", "None", "Horizontal"]:
                         max_stack = int(Decimal(str(c_props["H"])) // h)
                         max_stack = max(1, min(max_stack, int(Decimal(str(c_props["max_weight"])) // weight) if weight > 0 else 999))
                     else:

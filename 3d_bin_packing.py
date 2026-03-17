@@ -134,7 +134,8 @@ def custom_pack_item_to_bin(bin_obj, item):
     valid_pivots = [p for p in pivots if p[0] < bin_obj.width and p[1] < bin_obj.height and p[2] < bin_obj.depth]
     sorted_pivots = sorted(valid_pivots, key=lambda p: (p[2], p[0], p[1]))
 
-    best_score, best_pivot, best_rot = -9999999, None, None
+    # Using -float('inf') to ensure extreme penalties are still processed correctly if they are the only valid moves
+    best_score, best_pivot, best_rot = -float('inf'), None, None
 
     for pivot in sorted_pivots:
         for rot in item.allowed_rotations:
@@ -181,6 +182,12 @@ def custom_pack_item_to_bin(bin_obj, item):
                 # --- NEW HEURISTIC RULE for 80cm ---
                 if abs(float(h) - 80.0) <= 1.0 and float(bin_obj.height) >= 240.0:
                     score += 50000.0 
+                
+                # --- NEW: DOORS PROXIMITY HEURISTIC (Instinct de survie) ---
+                # Si le placement s'approche à moins de 25cm des portes, on applique une pénalité
+                # proportionnelle à son extension en X, forçant l'algorithme à privilégier la rotation qui encombre le moins.
+                if float(pivot[0] + w) > float(bin_obj.width) - 25.0:
+                    score -= float(pivot[0] + w) * 10000.0
                 
                 if score > best_score:
                     best_score, best_pivot, best_rot = score, pivot, rot

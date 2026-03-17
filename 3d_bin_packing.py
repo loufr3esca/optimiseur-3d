@@ -267,6 +267,12 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
     fig.add_trace(go.Scatter3d(x=x_lines, y=y_lines, z=z_lines, mode='lines', line=dict(color='gray', width=3), name="Container", hoverinfo='skip'))
 
     all_x_edges, all_y_edges, all_z_edges = [], [], []
+    
+    # Calculate Max Length Occupied
+    max_x_occupied = 0
+    if fitted_items:
+        max_x_occupied = max([float(item.position[0]) + float(item.get_dimension()[0]) for item in fitted_items])
+    remaining_x = cx - max_x_occupied
 
     for item in fitted_items:
         ref_name = item.name.split(" #")[0]
@@ -291,7 +297,44 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
     if all_x_edges:
         fig.add_trace(go.Scatter3d(x=all_x_edges, y=all_y_edges, z=all_z_edges, mode='lines', line=dict(color='black', width=3), hoverinfo='skip', showlegend=False))
 
-    fig.update_layout(title=title, scene=dict(xaxis=dict(title='Length (cm)', range=[0, cx * 1.1]), yaxis=dict(title='Width (cm)', range=[0, cy * 1.1]), zaxis=dict(title='Height (cm)', range=[0, cz * 1.1]), aspectmode='data', camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))), margin=dict(l=0, r=0, b=0, t=40), legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
+    # Measurement Annotations (Floating above the front edge)
+    if max_x_occupied > 0:
+        # Used Space Line
+        fig.add_trace(go.Scatter3d(
+            x=[0, max_x_occupied], y=[0, 0], z=[cz * 1.05, cz * 1.05],
+            mode='lines', line=dict(color='blue', width=4), name="Used Length", hoverinfo='skip'
+        ))
+        fig.add_trace(go.Scatter3d(
+            x=[max_x_occupied / 2], y=[0], z=[cz * 1.05],
+            mode='text', text=[f"Used: {max_x_occupied:.1f} cm"], textposition="top center",
+            textfont=dict(color='blue', size=12, weight='bold'), hoverinfo='skip', showlegend=False
+        ))
+        
+        # Remaining Space Line
+        if remaining_x > 0:
+            fig.add_trace(go.Scatter3d(
+                x=[max_x_occupied, cx], y=[0, 0], z=[cz * 1.05, cz * 1.05],
+                mode='lines', line=dict(color='green', width=4, dash='dash'), name="Remaining Space", hoverinfo='skip'
+            ))
+            fig.add_trace(go.Scatter3d(
+                x=[max_x_occupied + remaining_x / 2], y=[0], z=[cz * 1.05],
+                mode='text', text=[f"Remaining: {remaining_x:.1f} cm"], textposition="top center",
+                textfont=dict(color='green', size=12, weight='bold'), hoverinfo='skip', showlegend=False
+            ))
+
+    # Increased Z range slightly to fit the measurement texts comfortably
+    fig.update_layout(
+        title=title, 
+        scene=dict(
+            xaxis=dict(title='Length (cm)', range=[0, cx * 1.1]), 
+            yaxis=dict(title='Width (cm)', range=[0, cy * 1.1]), 
+            zaxis=dict(title='Height (cm)', range=[0, cz * 1.25]), 
+            aspectmode='data', 
+            camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
+        ), 
+        margin=dict(l=0, r=0, b=0, t=40), 
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+    )
     return fig
 
 # --- PDF GENERATOR ---
@@ -675,5 +718,11 @@ with col2:
                     total_vol = float(b.width * b.height * b.depth)
                     used_vol = sum([float(i.width * i.height * i.depth) for i in b.items])
                     fill_rate = (used_vol / total_vol) * 100 if total_vol > 0 else 0
+                    
+                    # Calculate measurements
+                    max_x_occupied = max([float(i.position[0]) + float(i.get_dimension()[0]) for i in b.items]) if b.items else 0
+                    rem_x = float(b.width) - max_x_occupied
+                    
                     st.markdown(f"### 🚛 {b.name} (Filled at {fill_rate:.1f}%)")
+                    st.caption(f"📏 **Used Length:** {max_x_occupied:.1f} cm | **Remaining Space:** {rem_x:.1f} cm")
                     st.plotly_chart(plot_3d_packing((c_props["L"], c_props["W"], c_props["H"]), b.items, st.session_state.color_map, f"3D View - {b.name}"), use_container_width=True)

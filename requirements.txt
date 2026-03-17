@@ -4,4 +4,4 @@ plotly
 pandas
 firebase-admin
 fpdf2
-kaleido
+kaleido==0.1.0.post1

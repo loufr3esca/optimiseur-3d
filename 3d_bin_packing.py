@@ -74,6 +74,8 @@ if 'used_bins' not in st.session_state:
     st.session_state.used_bins = []
 if 'optimization_done' not in st.session_state:
     st.session_state.optimization_done = False
+if 'current_mix_name' not in st.session_state:
+    st.session_state.current_mix_name = "Untitled Project"
 
 # --- URL PARAMETERS (SHARE LINK HANDLING) ---
 if 'config' in st.query_params and not st.session_state.get('loaded_from_url'):
@@ -84,6 +86,7 @@ if 'config' in st.query_params and not st.session_state.get('loaded_from_url'):
         for item in st.session_state.cargo_items:
             st.session_state.color_map[item['Reference']] = item.get('Color', '#333333')
         st.session_state.loaded_from_url = True
+        st.session_state.current_mix_name = config_name
         st.toast(f"✅ Configuration '{config_name}' loaded from shared link!")
     else:
         st.error("❌ Shared configuration not found in database.")
@@ -334,7 +337,7 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
     return fig
 
 # --- PDF GENERATOR ---
-def generate_pdf_report(cargo_items, used_bins, container_props, uploaded_images=None):
+def generate_pdf_report(cargo_items, used_bins, container_props, project_name="Untitled Project", uploaded_images=None):
     try:
         from fpdf import FPDF
     except ImportError:
@@ -344,7 +347,10 @@ def generate_pdf_report(cargo_items, used_bins, container_props, uploaded_images
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Arial", size=16, style='B')
-    pdf.cell(200, 10, txt="3D Cargo Optimization Report", ln=True, align='C')
+    
+    # Secure encoding for fpdf
+    safe_title = f"3D Cargo Optimization Report - {project_name}".encode('latin-1', 'replace').decode('latin-1')
+    pdf.cell(200, 10, txt=safe_title, ln=True, align='C')
     
     pdf.set_font("Arial", size=12, style='B')
     pdf.cell(200, 10, txt="Cargo Summary Table:", ln=True)
@@ -352,14 +358,17 @@ def generate_pdf_report(cargo_items, used_bins, container_props, uploaded_images
     
     for item in cargo_items:
         txt = f"- {item['Quantity']}x {item['Reference']} (Dim: {item['Length']}x{item['Width']}x{item['Height']}cm, {item['Weight']}kg)"
-        pdf.cell(200, 8, txt=txt, ln=True)
+        # Secure encoding for cargo items
+        safe_txt = txt.encode('latin-1', 'replace').decode('latin-1')
+        pdf.cell(200, 8, txt=safe_txt, ln=True)
 
     for idx, b in enumerate(used_bins):
         pdf.add_page()
         pdf.set_font("Arial", size=14, style='B')
-        pdf.cell(200, 10, txt=f"Vehicle: {b.name}", ln=True)
+        safe_bin_name = f"Vehicle: {b.name}".encode('latin-1', 'replace').decode('latin-1')
+        pdf.cell(200, 10, txt=safe_bin_name, ln=True)
         
-        # Injection du subterfuge : Utilisation des images téléchargées par l'utilisateur
+        # Inject user uploaded screenshots
         if uploaded_images and idx < len(uploaded_images):
             img_file = uploaded_images[idx]
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
@@ -468,6 +477,7 @@ with col1:
     if st.button("💾 Save Current Mix", use_container_width=True):
         if save_name and st.session_state.cargo_items:
             save_config(save_name, st.session_state.cargo_items)
+            st.session_state.current_mix_name = save_name
             st.success(f"Mix '{save_name}' Saved successfully!")
         else:
             st.error("Enter a name and add items to the list first.")
@@ -486,6 +496,7 @@ with col1:
                     for item in st.session_state.cargo_items:
                         st.session_state.color_map[item['Reference']] = item.get('Color', '#333333')
                     st.session_state.optimization_done = False
+                    st.session_state.current_mix_name = selected_mix
                     st.rerun()
                 else:
                     st.error("Please select a mix first.")
@@ -684,12 +695,15 @@ with col2:
 
         st.markdown("---")
         st.subheader("📄 Export PDF Report")
-        st.info("💡 **Subterfuge pour le PDF :** Survolez les graphiques 3D ci-dessus, cliquez sur l'icône 📷 (appareil photo) pour les télécharger en PNG. Ensuite, glissez-les simplement dans la boîte ci-dessous !")
+        st.info("💡 **PDF Workaround:** Hover over the 3D charts above, click the 📷 (camera) icon to download them as PNGs. Then, simply drag and drop them into the box below!")
         
-        uploaded_imgs = st.file_uploader("Ajouter les captures 3D au PDF (Optionnel)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+        pdf_project_name = st.text_input("Project Name for PDF:", value=st.session_state.get('current_mix_name', 'Untitled Project'))
+        uploaded_imgs = st.file_uploader("Add 3D screenshots to PDF (Optional)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
         
-        if st.button("📥 Générer & Télécharger le PDF final", use_container_width=True):
-            pdf_path = generate_pdf_report(st.session_state.cargo_items, st.session_state.used_bins, c_props, uploaded_imgs)
+        if st.button("📥 Generate Final PDF", use_container_width=True):
+            pdf_path = generate_pdf_report(st.session_state.cargo_items, st.session_state.used_bins, c_props, pdf_project_name, uploaded_imgs)
             if pdf_path:
                 with open(pdf_path, "rb") as pdf_file:
-                    st.download_button(label="📄 Cliquez ici pour télécharger votre rapport", data=pdf_file, file_name="cargo_report_with_images.pdf", mime="application/pdf")
+                    safe_filename = "".join([c for c in pdf_project_name if c.isalnum() or c in " -_"]).strip()
+                    if not safe_filename: safe_filename = "Project"
+                    st.download_button(label="📄 Click here to download your report", data=pdf_file, file_name=f"Cargo Report - {safe_filename}.pdf", mime="application/pdf")

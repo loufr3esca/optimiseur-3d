@@ -344,29 +344,30 @@ def generate_pdf_report(cargo_items, used_bins, container_props, project_name="U
         st.error("⚠️ The PDF Export feature requires 'fpdf2'. Please add it to your requirements.txt")
         return None
     
-    pdf = FPDF()
+    # Orientation 'L' (Landscape) for wider page layouts.
+    pdf = FPDF(orientation="L")
     pdf.add_page()
     pdf.set_font("Arial", size=16, style='B')
     
     # Secure encoding for fpdf
     safe_title = f"3D Cargo Optimization Report - {project_name}".encode('latin-1', 'replace').decode('latin-1')
-    pdf.cell(200, 10, txt=safe_title, ln=True, align='C')
+    pdf.cell(277, 10, txt=safe_title, ln=True, align='C')
     
     pdf.set_font("Arial", size=12, style='B')
-    pdf.cell(200, 10, txt="Cargo Summary Table:", ln=True)
+    pdf.cell(277, 10, txt="Cargo Summary Table:", ln=True)
     pdf.set_font("Arial", size=10)
     
     for item in cargo_items:
         txt = f"- {item['Quantity']}x {item['Reference']} (Dim: {item['Length']}x{item['Width']}x{item['Height']}cm, {item['Weight']}kg)"
         # Secure encoding for cargo items
         safe_txt = txt.encode('latin-1', 'replace').decode('latin-1')
-        pdf.cell(200, 8, txt=safe_txt, ln=True)
+        pdf.cell(277, 8, txt=safe_txt, ln=True)
 
     for idx, b in enumerate(used_bins):
         pdf.add_page()
         pdf.set_font("Arial", size=14, style='B')
         safe_bin_name = f"Vehicle: {b.name}".encode('latin-1', 'replace').decode('latin-1')
-        pdf.cell(200, 10, txt=safe_bin_name, ln=True)
+        pdf.cell(277, 10, txt=safe_bin_name, ln=True)
         
         # Inject user uploaded screenshots
         if uploaded_images and idx < len(uploaded_images):
@@ -374,10 +375,11 @@ def generate_pdf_report(cargo_items, used_bins, container_props, project_name="U
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
                 tmpfile.write(img_file.getvalue())
                 tmpfile.flush()
-                pdf.image(tmpfile.name, x=10, y=30, w=190)
+                # Wider image format for Landscape orientation (max width ~ 277mm)
+                pdf.image(tmpfile.name, x=10, y=30, w=277)
         else:
             pdf.set_font("Arial", size=10, style='I')
-            pdf.cell(200, 10, txt="[No 3D image provided. Upload Plotly PNG screenshots to include them here.]", ln=True)
+            pdf.cell(277, 10, txt="[No 3D image provided. Upload Plotly PNG screenshots to include them here.]", ln=True)
             
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
         pdf.output(tmp_pdf.name)

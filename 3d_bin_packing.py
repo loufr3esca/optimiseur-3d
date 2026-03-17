@@ -4,13 +4,89 @@ import plotly.graph_objects as go
 import pandas as pd
 from decimal import Decimal
 import json
-import os
+import firebase_admin
+from firebase_admin import credentials, firestore
 
-# --- NOUVEAU MOTEUR DE PLACEMENT (EXTREME POINT BEST FIT) ---
+# --- PAGE CONFIGURATION ---
+st.set_page_config(page_title="3D Cargo Optimizer", layout="wide")
+
+# --- FIREBASE CONNECTION ---
+# Check if Firebase is already initialized (prevents errors on page reload)
+try:
+    if not firebase_admin._apps:
+        # Retrieve secret key from Streamlit Secrets
+        key_dict = json.loads(st.secrets["firebase_credentials"])
+        cred = credentials.Certificate(key_dict)
+        firebase_admin.initialize_app(cred)
+    
+    # Connect to Firestore
+    db = firestore.client()
+    FIREBASE_ENABLED = True
+except Exception as e:
+    st.error(f"⚠️ Firebase configuration missing or invalid. Please check your Streamlit Secrets. Error: {e}")
+    FIREBASE_ENABLED = False
+
+def load_library():
+    """Load all products from the Firestore 'products' collection"""
+    if not FIREBASE_ENABLED:
+        return {}
+    try:
+        docs = db.collection(u'products').stream()
+        lib = {}
+        for doc in docs:
+            lib[doc.id] = doc.to_dict()
+        return lib
+    except Exception as e:
+        st.error(f"Database connection error: {e}")
+        return {}
+
+def save_library(library_data):
+    """Save each product into the Firestore 'products' collection"""
+    if not FIREBASE_ENABLED:
+        return
+    try:
+        for key, value in library_data.items():
+            db.collection(u'products').document(key).set(value)
+    except Exception as e:
+        st.error(f"Save error: {e}")
+
+# Load library into memory from Firebase
+if 'product_lib' not in st.session_state:
+    st.session_state.product_lib = load_library()
+
+# --- CONTAINERS DATA ---
+CONTAINERS = {
+    "TIR (Semi-trailer)": {"L": 1360, "W": 245, "H": 270, "max_weight": 24000},
+    "20FT Standard": {"L": 589, "W": 235, "H": 239, "max_weight": 28000},
+    "40FT Standard": {"L": 1203, "W": 235, "H": 239, "max_weight": 28000},
+    "40HQ (High Cube)": {"L": 1203, "W": 235, "H": 269, "max_weight": 28000}
+}
+
+DISTINCT_COLORS = [
+    '#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', 
+    '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', 
+    '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000'
+]
+
+# --- CUSTOM CLASSES ---
+class CustomItem(Item):
+    def __init__(self, name, width, height, depth, weight, allowed_rotations, stackable):
+        super().__init__(name, width, height, depth, weight)
+        self.allowed_rotations = allowed_rotations 
+        self.stackable = stackable                 
+
+    def get_dimension(self):
+        current_rotation = getattr(self, 'rotation_type', 0)
+        if current_rotation not in self.allowed_rotations:
+            huge = Decimal('999999')
+            return (huge, huge, huge)
+        return super().get_dimension()
+
+# --- ADVANCED PLACEMENT ENGINE (EXTREME POINT BEST FIT) ---
 def custom_pack_item_to_bin(bin_obj, item):
     """
-    Algorithme de placement avancé : évalue tous les points de pivot et rotations
-    pour maximiser la surface de contact (Best-Fit) des colis de dimensions variées.
+    Advanced placement algorithm: evaluates all pivot points and rotations
+    to maximize contact surface (Best-Fit) for various dimensions.
     """
     pivots = set()
     pivots.add((Decimal('0'), Decimal('0'), Decimal('0')))
@@ -110,27 +186,27 @@ def custom_pack_item_to_bin(bin_obj, item):
         return True
     return False
 
-# --- RÈGLES LOGISTIQUES FIXES (EUROPALLETS) ---
+# --- STRICT LOGISTICS RULES (EUROPALLETS) ---
 def get_optimal_europallet_slots(container_name):
-    """Génère les coordonnées exactes (en dur) des schémas d'optimisation industriels."""
+    """Generates exact coordinates (hardcoded) for standard industrial optimization patterns."""
     slots = []
     if "20FT" in container_name:
-        # Configuration Pinwheel 11 Palettes (7 verticales, 4 horizontales)
+        # Pinwheel configuration 11 Pallets (7 vertical, 4 horizontal)
         for i in range(7): slots.append({'x': i*80, 'y': 0, 'w': 80, 'h': 120, 'filled': False})
         for i in range(4): slots.append({'x': i*120, 'y': 120, 'w': 120, 'h': 80, 'filled': False})
     elif "40FT" in container_name or "40HQ" in container_name:
-        # Configuration Pinwheel 25 Palettes (15 verticales, 10 horizontales)
+        # Pinwheel configuration 25 Pallets (15 vertical, 10 horizontal)
         for i in range(15): slots.append({'x': i*80, 'y': 0, 'w': 80, 'h': 120, 'filled': False})
         for i in range(10): slots.append({'x': i*120, 'y': 120, 'w': 120, 'h': 80, 'filled': False})
     elif "TIR" in container_name:
-        # Configuration 33 Palettes (11 rangées de 3)
+        # Configuration 33 Pallets (11 rows of 3)
         for i in range(11):
             for j in range(3):
                 slots.append({'x': i*120, 'y': j*80, 'w': 120, 'h': 80, 'filled': False})
     return slots
 
 def pack_with_rules(bin_obj, item, euro_slots):
-    """Tente d'appliquer les règles strictes d'Europalette, sinon utilise l'algorithme générique."""
+    """Attempts to apply strict Europallet rules, otherwise falls back to the dynamic algorithm."""
     l, w = float(item.width), float(item.height)
     is_europallet = (abs(l - 120) <= 1 and abs(w - 80) <= 1) or (abs(l - 80) <= 1 and abs(w - 120) <= 1)
     
@@ -148,7 +224,7 @@ def pack_with_rules(bin_obj, item, euro_slots):
                     item.rotation_type = rot
                     d = item.get_dimension()
                     if abs(float(d[0]) - slot['w']) <= 1 and abs(float(d[1]) - slot['h']) <= 1:
-                        # Positionnement forcé au centimètre près selon la règle industrielle
+                        # Forced positioning to the exact centimeter according to industrial rule
                         item.position = (Decimal(str(slot['x'])), Decimal(str(slot['y'])), Decimal('0'))
                         bin_obj.items.append(item)
                         assigned = True
@@ -157,68 +233,16 @@ def pack_with_rules(bin_obj, item, euro_slots):
                 if assigned:
                     return True
                     
-    # Si ce n'est pas une Europalette ou si les slots parfaits sont pleins -> Algorithme dynamique
+    # If not a Europallet or if perfect slots are full -> Dynamic Algorithm
     return custom_pack_item_to_bin(bin_obj, item)
 
-
-# --- CONFIGURATION DE LA PAGE ---
-st.set_page_config(page_title="Optimiseur de Chargement 3D", layout="wide")
-
-# --- FICHIER DE BIBLIOTHÈQUE ---
-LIBRARY_FILE = "products_library.json"
-
-def load_library():
-    if os.path.exists(LIBRARY_FILE):
-        try:
-            with open(LIBRARY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_library(library_data):
-    with open(LIBRARY_FILE, "w", encoding="utf-8") as f:
-        json.dump(library_data, f, indent=4, ensure_ascii=False)
-
-# Chargement de la bibliothèque en mémoire
-if 'product_lib' not in st.session_state:
-    st.session_state.product_lib = load_library()
-
-# --- DONNÉES DES CONTENEURS ---
-CONTAINERS = {
-    "TIR (Semi-remorque)": {"L": 1360, "l": 245, "h": 270, "poids_max": 24000},
-    "20FT Standard": {"L": 589, "l": 235, "h": 239, "poids_max": 28000},
-    "40FT Standard": {"L": 1203, "l": 235, "h": 239, "poids_max": 28000},
-    "40HQ (High Cube)": {"L": 1203, "l": 235, "h": 269, "poids_max": 28000}
-}
-
-DISTINCT_COLORS = [
-    '#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', 
-    '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', 
-    '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000'
-]
-
-# --- CLASSES PERSONNALISÉES ---
-class CustomItem(Item):
-    def __init__(self, name, width, height, depth, weight, allowed_rotations, stackable):
-        super().__init__(name, width, height, depth, weight)
-        self.allowed_rotations = allowed_rotations 
-        self.stackable = stackable                 
-
-    def get_dimension(self):
-        current_rotation = getattr(self, 'rotation_type', 0)
-        if current_rotation not in self.allowed_rotations:
-            huge = Decimal('999999')
-            return (huge, huge, huge)
-        return super().get_dimension()
-
-# --- FONCTIONS UTILITAIRES ---
+# --- UTILITY FUNCTIONS ---
 def plot_3d_packing(container_dim, fitted_items, color_map, title):
-    """Génère la visualisation 3D pour un conteneur donné."""
+    """Generates 3D visualization for a given container."""
     fig = go.Figure()
     cx, cy, cz = container_dim
 
-    # Contours du conteneur
+    # Container contours
     x_lines = [0, cx, cx, 0, 0, None, 0, cx, cx, 0, 0, None, 0, 0, None, cx, cx, None, cx, cx, None, 0, 0]
     y_lines = [0, 0, cy, cy, 0, None, 0, 0, cy, cy, 0, None, 0, 0, None, 0, 0, None, cy, cy, None, cy, cy]
     z_lines = [0, 0, 0, 0, 0, None, cz, cz, cz, cz, cz, None, 0, cz, None, 0, cz, None, 0, cz, None, 0, cz]
@@ -226,7 +250,7 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
     fig.add_trace(go.Scatter3d(
         x=x_lines, y=y_lines, z=z_lines,
         mode='lines', line=dict(color='gray', width=3),
-        name="Conteneur", hoverinfo='skip'
+        name="Container", hoverinfo='skip'
     ))
 
     all_x_edges, all_y_edges, all_z_edges = [], [], []
@@ -235,7 +259,7 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
         ref_name = item.name.split(" #")[0]
         color = color_map.get(ref_name, '#333333')
         
-        # Conversion explicite en float pour éviter l'erreur Decimal + float
+        # Explicit float conversion to avoid Decimal + float errors
         x, y, z = map(float, item.position)
         w, h, d = map(float, item.get_dimension())
 
@@ -247,8 +271,8 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
         j_faces = [1, 2, 5, 6, 1, 5, 2, 6, 3, 7, 2, 6]
         k_faces = [2, 3, 6, 7, 5, 4, 6, 7, 7, 4, 6, 5]
 
-        emp_status = "✅ Oui" if getattr(item, 'stackable', True) else "❌ NON"
-        hovertext = f"<b>{item.name}</b><br>Dim : {w}x{h}x{d} cm<br>Empilable : {emp_status}"
+        emp_status = "✅ Yes" if getattr(item, 'stackable', True) else "❌ NO"
+        hovertext = f"<b>{item.name}</b><br>Dim : {w}x{h}x{d} cm<br>Stackable : {emp_status}"
 
         fig.add_trace(go.Mesh3d(
             x=x_coords, y=y_coords, z=z_coords,
@@ -271,9 +295,9 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
     fig.update_layout(
         title=title,
         scene=dict(
-            xaxis=dict(title='Longueur (cm) [Avant -> Arrière]', range=[0, cx * 1.1]),
-            yaxis=dict(title='Largeur (cm)', range=[0, cy * 1.1]),
-            zaxis=dict(title='Hauteur (cm)', range=[0, cz * 1.1]),
+            xaxis=dict(title='Length (cm) [Front -> Back]', range=[0, cx * 1.1]),
+            yaxis=dict(title='Width (cm)', range=[0, cy * 1.1]),
+            zaxis=dict(title='Height (cm)', range=[0, cz * 1.1]),
             aspectmode='data', camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
         ),
         margin=dict(l=0, r=0, b=0, t=40),
@@ -281,8 +305,8 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
     )
     return fig
 
-# --- INTERFACE UTILISATEUR ---
-st.title("📦 Optimisation de Chargement 3D Multi-Véhicules")
+# --- USER INTERFACE ---
+st.title("📦 3D Multi-Vehicle Cargo Optimizer")
 
 if 'cargo_items' not in st.session_state:
     st.session_state.cargo_items = []
@@ -292,99 +316,99 @@ if 'color_map' not in st.session_state:
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.header("1. Paramètres de transport")
-    transport_type = st.selectbox("Type de conteneur / camion", list(CONTAINERS.keys()))
+    st.header("1. Transport Parameters")
+    transport_type = st.selectbox("Container / Truck Type", list(CONTAINERS.keys()))
     c_props = CONTAINERS[transport_type]
-    max_bins = st.number_input("Nombre maximum de véhicules dans la flotte", min_value=1, max_value=10, value=2, 
-                               help="Si le chargement dépasse la capacité d'un véhicule, l'algorithme remplira automatiquement le(s) suivant(s).")
-    st.info(f"Dimensions : {c_props['L']} x {c_props['l']} x {c_props['h']} cm | Poids max : {c_props['poids_max']} kg")
+    max_bins = st.number_input("Maximum number of vehicles in fleet", min_value=1, max_value=10, value=2, 
+                               help="If the cargo exceeds one vehicle's capacity, the algorithm will automatically fill the next one(s).")
+    st.info(f"Dimensions : {c_props['L']} x {c_props['W']} x {c_props['H']} cm | Max weight : {c_props['max_weight']} kg")
 
-    st.header("2. Ajouter de la marchandise")
+    st.header("2. Add Cargo")
     
-    # Sélecteur de bibliothèque
+    # Library Selector
     lib_keys = list(st.session_state.product_lib.keys())
-    selected_preset = st.selectbox("📚 Charger un produit depuis la bibliothèque", ["-- Nouveau produit --"] + lib_keys)
+    selected_preset = st.selectbox("📚 Load a product from the library", ["-- New product --"] + lib_keys)
     
-    # Valeurs par défaut basées sur la sélection
+    # Default values based on selection
     d_ref, d_l, d_w, d_h, d_weight = "", 120.0, 80.0, 100.0, 500.0
     d_rot, d_stack = 1, 0
-    if selected_preset != "-- Nouveau produit --":
+    if selected_preset != "-- New product --":
         prod = st.session_state.product_lib[selected_preset]
-        d_ref, d_l, d_w, d_h, d_weight = prod["Ref"], float(prod["L"]), float(prod["l"]), float(prod["H"]), float(prod["Poids"])
-        rot_mapping = {"Aucune": 0, "Horizontale": 1, "Toutes": 2}
-        d_rot = rot_mapping.get(prod.get("Rotation", "Horizontale"), 1)
-        d_stack = 0 if prod.get("Empilable", "Oui") == "Oui" else 1
+        d_ref, d_l, d_w, d_h, d_weight = prod["Ref"], float(prod["L"]), float(prod["W"]), float(prod["H"]), float(prod["Weight"])
+        rot_mapping = {"None": 0, "Horizontal": 1, "All": 2}
+        d_rot = rot_mapping.get(prod.get("Rotation", "Horizontal"), 1)
+        d_stack = 0 if prod.get("Stackable", "Yes") == "Yes" else 1
 
     with st.form("add_item_form", clear_on_submit=False):
-        ref = st.text_input("Référence", value=d_ref)
+        ref = st.text_input("Reference", value=d_ref)
         
         col_qty, col_prio = st.columns(2)
-        qty = col_qty.number_input("Quantité", min_value=1, value=1, step=1)
-        prio = col_prio.number_input("Priorité (1 = Premier)", min_value=1, value=len(st.session_state.cargo_items)+1, step=1)
+        qty = col_qty.number_input("Quantity", min_value=1, value=1, step=1)
+        prio = col_prio.number_input("Priority (1 = First)", min_value=1, value=len(st.session_state.cargo_items)+1, step=1)
         
-        st.markdown("**Attention, saisissez les valeurs en CENTIMÈTRES !**")
+        st.markdown("**Warning, enter values in CENTIMETERS!**")
         col_l, col_w, col_h = st.columns(3)
-        l = col_l.number_input("Longueur (cm)", min_value=1.0, value=d_l, step=1.0)
-        w = col_w.number_input("Largeur (cm)", min_value=1.0, value=d_w, step=1.0)
-        h = col_h.number_input("Hauteur (cm)", min_value=1.0, value=d_h, step=1.0)
+        l = col_l.number_input("Length (cm)", min_value=1.0, value=d_l, step=1.0)
+        w = col_w.number_input("Width (cm)", min_value=1.0, value=d_w, step=1.0)
+        h = col_h.number_input("Height (cm)", min_value=1.0, value=d_h, step=1.0)
         
-        weight = st.number_input("Poids unitaire (kg)", min_value=0.1, value=d_weight, step=10.0)
+        weight = st.number_input("Unit Weight (kg)", min_value=0.1, value=d_weight, step=10.0)
         
         rotation_policy = st.radio(
-            "Rotation autorisée",
-            options=["Aucune", "Horizontale", "Toutes"],
+            "Allowed Rotation",
+            options=["None", "Horizontal", "All"],
             index=d_rot, horizontal=True
         )
         stackable = st.radio(
-            "Produit empilable ?",
-            options=["Oui", "Non"],
+            "Stackable Product?",
+            options=["Yes", "No"],
             index=d_stack, horizontal=True
         )
         
-        save_to_lib = st.checkbox("💾 Sauvegarder ce produit dans la bibliothèque pour de futures sessions", value=False)
+        save_to_lib = st.checkbox("💾 Save this product to the library for future sessions", value=False)
         
-        submit = st.form_submit_button("Ajouter à la liste")
+        submit = st.form_submit_button("Add to list")
 
         if submit:
             if ref:
-                # Ajout à la liste active avec Priorité
+                # Add to active list with Priority
                 st.session_state.cargo_items.append({
-                    "Priorité": int(prio),
-                    "Référence": ref, "Quantité": qty, 
-                    "Longueur": l, "Largeur": w, "Hauteur": h, "Poids": weight,
-                    "Rotation": rotation_policy, "Empilable": stackable
+                    "Priority": int(prio),
+                    "Reference": ref, "Quantity": qty, 
+                    "Length": l, "Width": w, "Height": h, "Weight": weight,
+                    "Rotation": rotation_policy, "Stackable": stackable
                 })
                 
-                # Assignation couleur
+                # Assign color
                 if ref not in st.session_state.color_map:
                     st.session_state.color_map[ref] = DISTINCT_COLORS[len(st.session_state.color_map) % len(DISTINCT_COLORS)]
                 
-                # Sauvegarde en bibliothèque si demandé
+                # Save to library if requested
                 if save_to_lib:
                     st.session_state.product_lib[ref] = {
-                        "Ref": ref, "L": l, "l": w, "H": h, "Poids": weight, 
-                        "Rotation": rotation_policy, "Empilable": stackable
+                        "Ref": ref, "L": l, "W": w, "H": h, "Weight": weight, 
+                        "Rotation": rotation_policy, "Stackable": stackable
                     }
                     save_library(st.session_state.product_lib)
-                    st.success(f"'{ref}' enregistré dans la bibliothèque !")
+                    st.success(f"'{ref}' saved in the library!")
                 else:
-                    st.success(f"Ajouté : {qty}x {ref} (Priorité {prio})")
+                    st.success(f"Added : {qty}x {ref} (Priority {prio})")
             else:
-                st.error("Veuillez entrer une référence.")
+                st.error("Please enter a reference.")
 
-    # --- ÉDITEUR DE BIBLIOTHÈQUE ---
+    # --- LIBRARY EDITOR ---
     st.markdown("---")
-    with st.expander("⚙️ Éditeur de Bibliothèque (Modifier / Supprimer des produits)"):
+    with st.expander("⚙️ Library Editor (Edit / Delete products)"):
         lib_data = []
         for k, v in st.session_state.product_lib.items():
             lib_data.append({
                 "Ref": v.get("Ref", k),
                 "L (cm)": float(v.get("L", 120)),
-                "l (cm)": float(v.get("l", 80)),
+                "W (cm)": float(v.get("W", 80)),
                 "H (cm)": float(v.get("H", 100)),
-                "Poids (kg)": float(v.get("Poids", 500)),
-                "Rotation": v.get("Rotation", "Horizontale"),
-                "Empilable": v.get("Empilable", "Oui")
+                "Weight (kg)": float(v.get("Weight", 500)),
+                "Rotation": v.get("Rotation", "Horizontal"),
+                "Stackable": v.get("Stackable", "Yes")
             })
         
         if lib_data:
@@ -393,103 +417,103 @@ with col1:
                 lib_df, 
                 num_rows="dynamic",
                 column_config={
-                    "Rotation": st.column_config.SelectboxColumn(options=["Aucune", "Horizontale", "Toutes"]),
-                    "Empilable": st.column_config.SelectboxColumn(options=["Oui", "Non"])
+                    "Rotation": st.column_config.SelectboxColumn(options=["None", "Horizontal", "All"]),
+                    "Stackable": st.column_config.SelectboxColumn(options=["Yes", "No"])
                 },
                 key="lib_editor"
             )
-            if st.button("💾 Enregistrer les modifications", use_container_width=True):
+            if st.button("💾 Save changes", use_container_width=True):
                 new_lib = {}
                 for row in edited_lib.to_dict('records'):
                     ref_key = str(row.get("Ref", "")).strip()
                     if ref_key and not pd.isna(ref_key) and ref_key != "nan":
                         new_lib[ref_key] = {
                             "Ref": ref_key,
-                            "L": row["L (cm)"], "l": row["l (cm)"], "H": row["H (cm)"],
-                            "Poids": row["Poids (kg)"],
-                            "Rotation": row["Rotation"], "Empilable": row["Empilable"]
+                            "L": row["L (cm)"], "W": row["W (cm)"], "H": row["H (cm)"],
+                            "Weight": row["Weight (kg)"],
+                            "Rotation": row["Rotation"], "Stackable": row["Stackable"]
                         }
                 st.session_state.product_lib = new_lib
                 save_library(new_lib)
-                st.success("Bibliothèque mise à jour avec succès !")
+                st.success("Library updated successfully!")
                 st.rerun()
         else:
-            st.info("La bibliothèque est vide.")
+            st.info("The library is empty.")
 
 with col2:
-    st.header("3. Liste des marchandises (Éditable)")
-    st.info("💡 L'algorithme chargera les palettes **strictement dans l'ordre de priorité**. Changez les numéros de la colonne **Priorité** pour ajuster l'ordre de remplissage.")
+    st.header("3. Cargo List (Editable)")
+    st.info("💡 The algorithm will load pallets **strictly in priority order**. Change numbers in the Priority column to adjust the loading order.")
     
     if not st.session_state.cargo_items:
-        st.write("La liste est vide.")
-        display_df = pd.DataFrame(columns=["Priorité", "Référence", "Quantité", "Longueur", "Largeur", "Hauteur", "Poids", "Rotation", "Empilable"])
+        st.write("The list is empty.")
+        display_df = pd.DataFrame(columns=["Priority", "Reference", "Quantity", "Length", "Width", "Height", "Weight", "Rotation", "Stackable"])
     else:
-        # Tri automatique de la liste par priorité avant de l'afficher
-        st.session_state.cargo_items = sorted(st.session_state.cargo_items, key=lambda x: int(x.get("Priorité", 999)))
+        # Automatic sorting of list by priority before displaying
+        st.session_state.cargo_items = sorted(st.session_state.cargo_items, key=lambda x: int(x.get("Priority", 999)))
         display_df = pd.DataFrame(st.session_state.cargo_items)
         
-    # --- TABLEAU ÉDITABLE ---
+    # --- EDITABLE TABLE ---
     edited_df = st.data_editor(
         display_df,
         num_rows="dynamic",
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Priorité": st.column_config.NumberColumn(min_value=1, step=1),
-            "Quantité": st.column_config.NumberColumn(min_value=1, step=1),
-            "Rotation": st.column_config.SelectboxColumn(options=["Aucune", "Horizontale", "Toutes"]),
-            "Empilable": st.column_config.SelectboxColumn(options=["Oui", "Non"])
+            "Priority": st.column_config.NumberColumn(min_value=1, step=1),
+            "Quantity": st.column_config.NumberColumn(min_value=1, step=1),
+            "Rotation": st.column_config.SelectboxColumn(options=["None", "Horizontal", "All"]),
+            "Stackable": st.column_config.SelectboxColumn(options=["Yes", "No"])
         }
     )
-    # On met à jour l'état avec les modifications éventuelles faites à la main dans le tableau
+    # Update state with manual modifications made in the table
     st.session_state.cargo_items = edited_df.to_dict('records')
 
-    st.header("4. Résultat de l'optimisation")
-    if st.button("🚀 Calculer et afficher la flotte", type="primary", use_container_width=True):
+    st.header("4. Optimization Result")
+    if st.button("🚀 Calculate and display fleet", type="primary", use_container_width=True):
         if not st.session_state.cargo_items:
-            st.warning("Veuillez ajouter des marchandises.")
+            st.warning("Please add cargo items.")
         else:
-            # --- VERIFICATION PRE-CALCUL (SANITY CHECK MILLIMETRES) ---
+            # --- PRE-CALCULATION VERIFICATION (SANITY CHECK MILLIMETERS) ---
             impossible_items = set()
             for item in st.session_state.cargo_items:
-                h = float(item["Hauteur"])
-                rot = item.get("Rotation", "Horizontale")
-                if rot in ["Aucune", "Horizontale"] and h > c_props["h"]:
-                    impossible_items.add(item["Référence"])
+                h = float(item["Height"])
+                rot = item.get("Rotation", "Horizontal")
+                if rot in ["None", "Horizontal"] and h > c_props["H"]:
+                    impossible_items.add(item["Reference"])
             
             if impossible_items:
-                st.error(f"🚨 **ALERTE DIMENSION** : La hauteur des articles suivants ({', '.join(impossible_items)}) dépasse le plafond du camion ({c_props['h']} cm). \n\n👉 **Avez-vous saisi des millimètres (ex: 1060) au lieu de centimètres (ex: 106) ?** L'algorithme refusera de les charger.")
+                st.error(f"🚨 **DIMENSION ALERT** : The height of the following items ({', '.join(impossible_items)}) exceeds the truck's ceiling ({c_props['H']} cm). \n\n👉 **Did you enter millimeters (e.g. 1060) instead of centimeters (e.g. 106)?** The algorithm will refuse to load them.")
             
-            with st.spinner("Calcul en cours (Règles métiers + Heuristique)..."):
+            with st.spinner("Calculating (Business Rules + Heuristics)..."):
                 
-                # Le tableau a pu être édité, on s'assure qu'il est bien trié
-                sorted_cargo = sorted(st.session_state.cargo_items, key=lambda x: int(x.get("Priorité", 999)))
+                # Ensure the table is properly sorted
+                sorted_cargo = sorted(st.session_state.cargo_items, key=lambda x: int(x.get("Priority", 999)))
                 
-                # 1. On prépare la liste absolue de TOUTES les boîtes en PRÉ-EMPILANT les palettes
+                # 1. Prepare absolute list of ALL boxes by PRE-STACKING pallets
                 all_items_to_pack = []
                 for item in sorted_cargo:
-                    rot_val = item.get("Rotation", "Horizontale")
-                    if rot_val == "Aucune": allowed_rot = [0]
-                    elif rot_val == "Horizontale": allowed_rot = [0, 1]
+                    rot_val = item.get("Rotation", "Horizontal")
+                    if rot_val == "None": allowed_rot = [0]
+                    elif rot_val == "Horizontal": allowed_rot = [0, 1]
                     else: allowed_rot = [0, 1, 2, 3, 4, 5]
                     
-                    is_stackable = True if item.get("Empilable", "Oui") == "Oui" else False
+                    is_stackable = True if item.get("Stackable", "Yes") == "Yes" else False
                     
-                    # Forcer le type Decimal pour éviter l'erreur TypeError interne
-                    h = Decimal(str(item["Hauteur"]))
-                    weight = Decimal(str(item["Poids"]))
-                    qty = int(item["Quantité"])
-                    l_dec = Decimal(str(item["Longueur"]))
-                    w_dec = Decimal(str(item["Largeur"]))
+                    # Force Decimal type to avoid internal TypeError
+                    h = Decimal(str(item["Height"]))
+                    weight = Decimal(str(item["Weight"]))
+                    qty = int(item["Quantity"])
+                    l_dec = Decimal(str(item["Length"]))
+                    w_dec = Decimal(str(item["Width"]))
                     
-                    ref_name = item["Référence"]
+                    ref_name = item["Reference"]
                     if ref_name not in st.session_state.color_map:
                         st.session_state.color_map[ref_name] = DISTINCT_COLORS[len(st.session_state.color_map) % len(DISTINCT_COLORS)]
 
-                    # PRÉ-EMPILAGE (Virtual Stacking)
-                    if is_stackable and rot_val in ["Aucune", "Horizontale"]:
-                        max_stack = int(Decimal(str(c_props["h"])) // h)
-                        max_stack = max(1, min(max_stack, int(Decimal(str(c_props["poids_max"])) // weight) if weight > 0 else 999))
+                    # PRE-STACKING (Virtual Stacking)
+                    if is_stackable and rot_val in ["None", "Horizontal"]:
+                        max_stack = int(Decimal(str(c_props["H"])) // h)
+                        max_stack = max(1, min(max_stack, int(Decimal(str(c_props["max_weight"])) // weight) if weight > 0 else 999))
                     else:
                         max_stack = 1
                         
@@ -509,7 +533,7 @@ with col2:
                             stackable=is_stackable
                         )
                         c_item.original_qty = current_q
-                        c_item.original_hauteur = h
+                        c_item.original_height = h
                         c_item.original_weight = weight
                         
                         all_items_to_pack.append(c_item)
@@ -518,25 +542,25 @@ with col2:
                 unpacked_items = list(all_items_to_pack)
                 used_bins = []
 
-                # 2. Remplissage manuel camion par camion
+                # 2. Manual truck by truck loading
                 for i in range(int(max_bins)):
                     if not unpacked_items:
-                        break # Tout est chargé !
+                        break # Everything is loaded!
                     
-                    # Forcer le type Decimal pour les dimensions et poids max du conteneur
+                    # Force Decimal type for container dimensions and max weight
                     bin_obj = Bin(
                         f"{transport_type} #{i+1}", 
                         Decimal(str(c_props["L"])), 
-                        Decimal(str(c_props["l"])), 
-                        Decimal(str(c_props["h"])), 
-                        Decimal(str(c_props["poids_max"]))
+                        Decimal(str(c_props["W"])), 
+                        Decimal(str(c_props["H"])), 
+                        Decimal(str(c_props["max_weight"]))
                     )
                     
-                    # Génération des slots parfaits pour Europalette dans CE camion
+                    # Generate perfect slots for Europallets in THIS truck
                     euro_slots = get_optimal_europallet_slots(transport_type)
                     
                     items_left = []
-                    # Insertion respectant l'ordre de priorité, les Règles Europalette, ET l'optimisation
+                    # Insertion respecting priority order, Europallet rules, AND optimization
                     for item in unpacked_items:
                         success = pack_with_rules(bin_obj, item, euro_slots)
                         if not success:
@@ -545,10 +569,10 @@ with col2:
                     if len(bin_obj.items) > 0:
                         used_bins.append(bin_obj)
                     
-                    # On transfère ce qui n'est pas rentré dans le prochain camion
+                    # Transfer unfitted items to the next truck
                     unpacked_items = items_left
 
-                # 3. DÉBALLAGE DES COLONNES VIRTUELLES POUR LE VISUEL (Unpacking)
+                # 3. UNPACKING VIRTUAL COLUMNS FOR VISUALIZATION
                 final_used_bins = []
                 for b in used_bins:
                     unpacked_items_list = []
@@ -557,7 +581,7 @@ with col2:
                         base_name = stack_item.name.split(" #Stack")[0]
                         
                         if orig_q > 1:
-                            orig_h = getattr(stack_item, 'original_hauteur')
+                            orig_h = getattr(stack_item, 'original_height')
                             orig_w = getattr(stack_item, 'original_weight')
                             x, y, z = stack_item.position
                             
@@ -583,13 +607,13 @@ with col2:
                     final_used_bins.append(b)
                 used_bins = final_used_bins
 
-                # Déballage des items refusés
+                # Unpacking refused items
                 final_unfitted = []
                 for stack_item in unpacked_items:
                     orig_q = getattr(stack_item, 'original_qty', 1)
                     base_name = stack_item.name.split(" #Stack")[0]
                     if orig_q > 1:
-                        orig_h = getattr(stack_item, 'original_hauteur')
+                        orig_h = getattr(stack_item, 'original_height')
                         orig_w = getattr(stack_item, 'original_weight')
                         for idx in range(orig_q):
                             single = CustomItem(
@@ -608,24 +632,24 @@ with col2:
                         final_unfitted.append(stack_item)
                 unpacked_items = final_unfitted
 
-                # --- AFFICHAGE DES RÉSULTATS ---
-                st.success(f"✅ Optimisation terminée ! {len(used_bins)} véhicule(s) utilisé(s).")
+                # --- DISPLAY RESULTS ---
+                st.success(f"✅ Optimization complete! {len(used_bins)} vehicle(s) used.")
                 
                 if len(unpacked_items) > 0:
-                    st.error(f"❌ La flotte de {max_bins} véhicule(s) est pleine (ou certaines palettes sont trop grandes) ! {len(unpacked_items)} article(s) restent à quai.")
+                    st.error(f"❌ The fleet of {max_bins} vehicle(s) is full (or some pallets are too large)! {len(unpacked_items)} item(s) left behind.")
                 
                 for b in used_bins:
                     total_vol = float(b.width * b.height * b.depth)
                     used_vol = sum([float(i.width * i.height * i.depth) for i in b.items])
                     fill_rate = (used_vol / total_vol) * 100 if total_vol > 0 else 0
                     
-                    st.markdown(f"### 🚛 {b.name} (Rempli à {fill_rate:.1f}%)")
-                    st.caption(f"{len(b.items)} articles chargés dans ce véhicule.")
+                    st.markdown(f"### 🚛 {b.name} (Filled at {fill_rate:.1f}%)")
+                    st.caption(f"{len(b.items)} items loaded in this vehicle.")
                     
                     fig = plot_3d_packing(
-                        (c_props["L"], c_props["l"], c_props["h"]), 
+                        (c_props["L"], c_props["W"], c_props["H"]), 
                         b.items, 
                         st.session_state.color_map,
-                        title=f"Vue 3D - {b.name}"
+                        title=f"3D View - {b.name}"
                     )
                     st.plotly_chart(fig, use_container_width=True)

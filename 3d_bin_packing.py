@@ -215,11 +215,28 @@ def pack_with_rules(bin_obj, item, euro_slots):
                     item.rotation_type = rot
                     d = item.get_dimension()
                     if abs(float(d[0]) - slot['w']) <= 1 and abs(float(d[1]) - slot['h']) <= 1:
-                        item.position = (Decimal(str(slot['x'])), Decimal(str(slot['y'])), Decimal('0'))
-                        bin_obj.items.append(item)
-                        assigned = True
-                        slot['filled'] = True
-                        break
+                        
+                        # --- NEW: Vérification stricte des collisions pour la grille Europalette ---
+                        collision = False
+                        p0, p1, p2 = Decimal(str(slot['x'])), Decimal(str(slot['y'])), Decimal('0')
+                        w_d, h_d, d_d = d
+                        
+                        for p_item in bin_obj.items:
+                            pw, ph, pd = p_item.get_dimension()
+                            px, py, pz = p_item.position
+                            if not (p0 >= px+pw or p0+w_d <= px or p1 >= py+ph or p1+h_d <= py or p2 >= pz+pd or p2+d_d <= pz):
+                                collision = True; break
+                                
+                            if getattr(p_item, 'stackable', True) is False and p2 >= pz+pd:
+                                if not (p0 >= px+pw or p0+w_d <= px or p1 >= py+ph or p1+h_d <= py):
+                                    collision = True; break
+                        
+                        if not collision:
+                            item.position = (p0, p1, p2)
+                            bin_obj.items.append(item)
+                            assigned = True
+                            slot['filled'] = True
+                            break
                 if assigned: return True
     return custom_pack_item_to_bin(bin_obj, item)
 

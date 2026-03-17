@@ -3,3 +3,5 @@ py3dbp
 plotly
 pandas
 firebase-admin
+fpdf2
+kaleido

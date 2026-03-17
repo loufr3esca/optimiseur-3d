@@ -259,10 +259,16 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
 def generate_pdf_report(cargo_items, used_bins, container_props):
     try:
         from fpdf import FPDF
-        import kaleido 
     except ImportError:
-        st.error("⚠️ The PDF Export feature requires 'fpdf2' and 'kaleido'. Please add them to your requirements.txt")
+        st.error("⚠️ The PDF Export feature requires 'fpdf2'. Please add it to your requirements.txt")
         return None
+
+    has_kaleido = False
+    try:
+        import kaleido
+        has_kaleido = True
+    except ImportError:
+        pass
     
     pdf = FPDF()
     pdf.add_page()
@@ -283,19 +289,25 @@ def generate_pdf_report(cargo_items, used_bins, container_props):
         pdf.set_font("Arial", size=14, style='B')
         pdf.cell(200, 10, txt=f"Vehicle: {b.name}", ln=True)
         
-        fig = plot_3d_packing((container_props["L"], container_props["W"], container_props["H"]), b.items, st.session_state.color_map, "")
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
-            try:
-                # This can throw an error on Streamlit Cloud if Chromium is not installed
-                fig.write_image(tmpfile.name, engine="kaleido", scale=2)
-                pdf.image(tmpfile.name, x=10, y=30, w=190)
-            except Exception as e:
-                pdf.set_font("Arial", size=10, style='I')
-                pdf.cell(200, 10, txt="[3D Image rendering unavailable in this cloud environment]", ln=True)
-                if not image_error_shown:
-                    st.warning("⚠️ **To get 3D images in your PDF:**\n\nStreamlit Cloud needs Chromium to render 3D images. \n1. Go to your GitHub repo and create a file named `packages.txt`.\n2. Write `chromium` inside it and commit.\n3. Make sure your `requirements.txt` has `kaleido==0.1.0.post1`.")
-                    image_error_shown = True
+        if has_kaleido:
+            fig = plot_3d_packing((container_props["L"], container_props["W"], container_props["H"]), b.items, st.session_state.color_map, "")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
+                try:
+                    # This can throw an error on Streamlit Cloud if Chromium is not installed
+                    fig.write_image(tmpfile.name, engine="kaleido", scale=2)
+                    pdf.image(tmpfile.name, x=10, y=30, w=190)
+                except Exception as e:
+                    pdf.set_font("Arial", size=10, style='I')
+                    pdf.cell(200, 10, txt="[3D Image rendering unavailable in this cloud environment]", ln=True)
+                    if not image_error_shown:
+                        st.warning("⚠️ **Note:** Streamlit Cloud couldn't render the 3D images for the PDF (Chromium missing).")
+                        image_error_shown = True
+        else:
+            pdf.set_font("Arial", size=10, style='I')
+            pdf.cell(200, 10, txt="[3D Image rendering unavailable: 'kaleido' package not installed]", ln=True)
+            if not image_error_shown:
+                st.info("💡 To get 3D images in the PDF, the 'kaleido' package must be installed in requirements.txt (Note: it can be unstable on Streamlit Cloud).")
+                image_error_shown = True
             
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
         pdf.output(tmp_pdf.name)

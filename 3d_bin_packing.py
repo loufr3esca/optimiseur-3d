@@ -184,8 +184,6 @@ def custom_pack_item_to_bin(bin_obj, item):
                     score += 50000.0 
                 
                 # --- NEW: DOORS PROXIMITY HEURISTIC (Instinct de survie) ---
-                # Si le placement s'approche à moins de 25cm des portes, on applique une pénalité
-                # proportionnelle à son extension en X, forçant l'algorithme à privilégier la rotation qui encombre le moins.
                 if float(pivot[0] + w) > float(bin_obj.width) - 25.0:
                     score -= float(pivot[0] + w) * 10000.0
                 
@@ -362,13 +360,50 @@ def generate_pdf_report(cargo_items, used_bins, container_props, project_name="U
     
     pdf.set_font("Arial", size=12, style='B')
     pdf.cell(277, 10, txt="Cargo Summary Table:", ln=True)
-    pdf.set_font("Arial", size=10)
+    pdf.ln(2)
     
-    for item in cargo_items:
-        txt = f"- {item['Quantity']}x {item['Reference']} (Dim: {item['Length']}x{item['Width']}x{item['Height']}cm, {item['Weight']}kg)"
-        # Secure encoding for cargo items
-        safe_txt = txt.encode('latin-1', 'replace').decode('latin-1')
-        pdf.cell(277, 8, txt=safe_txt, ln=True)
+    # --- DESSIN DU TABLEAU ---
+    pdf.set_font("Arial", size=10, style='B')
+    pdf.set_fill_color(230, 230, 230) # Gris clair pour l'en-tête
+    
+    # Définition des largeurs de colonnes (Total = 268mm, rentre bien dans les 277mm disponibles)
+    headers = [
+        ("Prio", 12), ("Qty", 12), ("Reference", 115), 
+        ("L (cm)", 18), ("W (cm)", 18), ("H (cm)", 18), 
+        ("Wgt (kg)", 20), ("Rotation", 40), ("Stack", 15)
+    ]
+    
+    # Ligne d'en-tête
+    for head, w in headers:
+        pdf.cell(w, 8, txt=head, border=1, fill=True, align='C')
+    pdf.ln()
+
+    # Lignes de données
+    pdf.set_font("Arial", size=9)
+    sorted_items = sorted(cargo_items, key=lambda x: int(x.get("Priority", 999)))
+    
+    for item in sorted_items:
+        pdf.cell(12, 8, txt=str(item.get('Priority', '')), border=1, align='C')
+        pdf.cell(12, 8, txt=str(item.get('Quantity', '')), border=1, align='C')
+        
+        # Tronquer la référence pour éviter qu'elle ne déborde (max ~60 caractères selon la police)
+        safe_ref = str(item.get('Reference', ''))[:60].encode('latin-1', 'replace').decode('latin-1')
+        pdf.cell(115, 8, txt=safe_ref, border=1, align='L')
+        
+        pdf.cell(18, 8, txt=str(item.get('Length', '')), border=1, align='C')
+        pdf.cell(18, 8, txt=str(item.get('Width', '')), border=1, align='C')
+        pdf.cell(18, 8, txt=str(item.get('Height', '')), border=1, align='C')
+        pdf.cell(20, 8, txt=str(item.get('Weight', '')), border=1, align='C')
+        
+        # Simplifier le nom de la rotation pour qu'il rentre bien dans la case
+        rot = str(item.get('Rotation', ''))
+        rot = rot.replace("Auto (Horizontal)", "Auto(H)").replace("Auto (All)", "Auto(All)").replace("Strict: L -> Length", "L->Length").replace("Strict: W -> Length", "W->Length")
+        pdf.cell(40, 8, txt=rot, border=1, align='C')
+        
+        pdf.cell(15, 8, txt=str(item.get('Stackable', '')), border=1, align='C')
+        pdf.ln()
+        
+    pdf.ln(5) # Espace après le tableau
 
     for idx, b in enumerate(used_bins):
         pdf.add_page()

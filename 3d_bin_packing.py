@@ -474,7 +474,7 @@ with col2:
             "Quantity": st.column_config.NumberColumn(min_value=1, step=1),
             "Rotation": st.column_config.SelectboxColumn(options=["None", "Horizontal", "All"]),
             "Stackable": st.column_config.SelectboxColumn(options=["Yes", "No"]),
-            "Color": st.column_config.ColorColumn("Color (3D View)")
+            "Color": st.column_config.TextColumn("Color (Hex Code)")
         }
     )
     

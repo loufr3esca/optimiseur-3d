@@ -70,6 +70,10 @@ if 'cargo_items' not in st.session_state:
     st.session_state.cargo_items = []
 if 'color_map' not in st.session_state:
     st.session_state.color_map = {}
+if 'used_bins' not in st.session_state:
+    st.session_state.used_bins = []
+if 'optimization_done' not in st.session_state:
+    st.session_state.optimization_done = False
 
 # --- URL PARAMETERS (SHARE LINK HANDLING) ---
 if 'config' in st.query_params and not st.session_state.get('loaded_from_url'):
@@ -172,8 +176,6 @@ def custom_pack_item_to_bin(bin_obj, item):
                 score -= (float(pivot[0]) + float(pivot[1]) + float(pivot[2])) * 0.1
                 
                 # --- NEW HEURISTIC RULE for 80cm ---
-                # h is the dimension along the Y axis (width of the container).
-                # If an edge is 80cm and the container fits at least 3 (>= 240), give a massive bonus to force rows of 3.
                 if abs(float(h) - 80.0) <= 1.0 and float(bin_obj.height) >= 240.0:
                     score += 50000.0 
                 
@@ -216,7 +218,6 @@ def pack_with_rules(bin_obj, item, euro_slots):
                     d = item.get_dimension()
                     if abs(float(d[0]) - slot['w']) <= 1 and abs(float(d[1]) - slot['h']) <= 1:
                         
-                        # --- Vérification stricte des collisions pour la grille Europalette ---
                         collision = False
                         p0, p1, p2 = Decimal(str(slot['x'])), Decimal(str(slot['y'])), Decimal('0')
                         w_d, h_d, d_d = d
@@ -232,21 +233,15 @@ def pack_with_rules(bin_obj, item, euro_slots):
                                     collision = True; break
                         
                         if not collision:
-                            # --- NOUVEAU : Glissement (Gravity Slide) vers l'avant (Axe X) ---
-                            # Permet de supprimer les espaces vides quand le chargement précédent n'est pas aligné sur la grille.
                             min_x = Decimal('0')
                             for p_item in bin_obj.items:
                                 pw, ph, pd = p_item.get_dimension()
                                 px, py, pz = p_item.position
-                                # Vérifie si les articles sont sur la même "ligne" Y et Z
                                 if not (p1 >= py+ph or p1+h_d <= py or p2 >= pz+pd or p2+d_d <= pz):
-                                    # Si l'article existant est devant l'emplacement prévu sur l'axe X
                                     if px + pw <= p0:
                                         min_x = max(min_x, px + pw)
                             
-                            # On écrase la coordonnée X fixe par la nouvelle coordonnée glissée
                             p0 = min_x
-                            
                             item.position = (p0, p1, p2)
                             bin_obj.items.append(item)
                             assigned = True
@@ -268,7 +263,6 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
 
     all_x_edges, all_y_edges, all_z_edges = [], [], []
     
-    # Calculate Max Length Occupied
     max_x_occupied = 0
     if fitted_items:
         max_x_occupied = max([float(item.position[0]) + float(item.get_dimension()[0]) for item in fitted_items])
@@ -290,7 +284,6 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
         emp_status = "✅ Yes" if getattr(item, 'stackable', True) else "❌ NO"
         hovertext = f"<b>{item.name}</b><br>Dim : {w}x{h}x{d} cm<br>Stackable : {emp_status}"
 
-        # On affiche la légende seulement pour le premier bloc d'un produit pour éviter les doublons
         show_leg = ref_name not in legend_added
         if show_leg:
             legend_added.add(ref_name)
@@ -304,9 +297,7 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
     if all_x_edges:
         fig.add_trace(go.Scatter3d(x=all_x_edges, y=all_y_edges, z=all_z_edges, mode='lines', line=dict(color='black', width=3), hoverinfo='skip', showlegend=False))
 
-    # Measurement Annotations (Floating above the front edge)
     if max_x_occupied > 0:
-        # Used Space Line
         fig.add_trace(go.Scatter3d(
             x=[0, max_x_occupied], y=[0, 0], z=[cz * 1.05, cz * 1.05],
             mode='lines', line=dict(color='blue', width=4), name="Used Length", hoverinfo='skip'
@@ -317,7 +308,6 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
             textfont=dict(color='blue', size=12, weight='bold'), hoverinfo='skip', showlegend=False
         ))
         
-        # Remaining Space Line
         if remaining_x > 0:
             fig.add_trace(go.Scatter3d(
                 x=[max_x_occupied, cx], y=[0, 0], z=[cz * 1.05, cz * 1.05],
@@ -329,7 +319,6 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
                 textfont=dict(color='green', size=12, weight='bold'), hoverinfo='skip', showlegend=False
             ))
 
-    # Increased Z range slightly to fit the measurement texts comfortably
     fig.update_layout(
         title=title, 
         scene=dict(
@@ -345,19 +334,12 @@ def plot_3d_packing(container_dim, fitted_items, color_map, title):
     return fig
 
 # --- PDF GENERATOR ---
-def generate_pdf_report(cargo_items, used_bins, container_props):
+def generate_pdf_report(cargo_items, used_bins, container_props, uploaded_images=None):
     try:
         from fpdf import FPDF
     except ImportError:
         st.error("⚠️ The PDF Export feature requires 'fpdf2'. Please add it to your requirements.txt")
         return None
-
-    has_kaleido = False
-    try:
-        import kaleido
-        has_kaleido = True
-    except ImportError:
-        pass
     
     pdf = FPDF()
     pdf.add_page()
@@ -372,31 +354,21 @@ def generate_pdf_report(cargo_items, used_bins, container_props):
         txt = f"- {item['Quantity']}x {item['Reference']} (Dim: {item['Length']}x{item['Width']}x{item['Height']}cm, {item['Weight']}kg)"
         pdf.cell(200, 8, txt=txt, ln=True)
 
-    image_error_shown = False
-    for b in used_bins:
+    for idx, b in enumerate(used_bins):
         pdf.add_page()
         pdf.set_font("Arial", size=14, style='B')
         pdf.cell(200, 10, txt=f"Vehicle: {b.name}", ln=True)
         
-        if has_kaleido:
-            fig = plot_3d_packing((container_props["L"], container_props["W"], container_props["H"]), b.items, st.session_state.color_map, "")
+        # Injection du subterfuge : Utilisation des images téléchargées par l'utilisateur
+        if uploaded_images and idx < len(uploaded_images):
+            img_file = uploaded_images[idx]
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
-                try:
-                    # This can throw an error on Streamlit Cloud if Chromium is not installed
-                    fig.write_image(tmpfile.name, engine="kaleido", scale=2)
-                    pdf.image(tmpfile.name, x=10, y=30, w=190)
-                except Exception as e:
-                    pdf.set_font("Arial", size=10, style='I')
-                    pdf.cell(200, 10, txt="[3D Image rendering unavailable in this cloud environment]", ln=True)
-                    if not image_error_shown:
-                        st.warning("⚠️ **Note:** Streamlit Cloud couldn't render the 3D images for the PDF (Chromium missing).")
-                        image_error_shown = True
+                tmpfile.write(img_file.getvalue())
+                tmpfile.flush()
+                pdf.image(tmpfile.name, x=10, y=30, w=190)
         else:
             pdf.set_font("Arial", size=10, style='I')
-            pdf.cell(200, 10, txt="[3D Image rendering unavailable: 'kaleido' package not installed]", ln=True)
-            if not image_error_shown:
-                st.info("💡 To get 3D images in the PDF, the 'kaleido' package must be installed in requirements.txt (Note: it can be unstable on Streamlit Cloud).")
-                image_error_shown = True
+            pdf.cell(200, 10, txt="[No 3D image provided. Upload Plotly PNG screenshots to include them here.]", ln=True)
             
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
         pdf.output(tmp_pdf.name)
@@ -418,7 +390,6 @@ with col1:
     lib_keys = list(st.session_state.product_lib.keys())
     selected_preset = st.selectbox("📚 Load a product from library", ["-- New product --"] + lib_keys)
     
-    # Defaults and backward compatibility for existing French database entries
     d_ref, d_l, d_h = "", 120.0, 100.0
     d_w, d_weight = 80.0, 500.0
     
@@ -426,9 +397,9 @@ with col1:
         prod = st.session_state.product_lib[selected_preset]
         d_ref = prod.get("Ref", "")
         d_l = float(prod.get("L", 120.0))
-        d_w = float(prod.get("W", prod.get("l", 80.0))) # Fallback for old "l"
+        d_w = float(prod.get("W", prod.get("l", 80.0)))
         d_h = float(prod.get("H", 100.0))
-        d_weight = float(prod.get("Weight", prod.get("Poids", 500.0))) # Fallback for old "Poids"
+        d_weight = float(prod.get("Weight", prod.get("Poids", 500.0)))
         
         rot_raw = prod.get("Rotation", "Auto (Horizontal)")
         if rot_raw in ["Horizontale", "Horizontal", "Auto (Horizontal)"]: rot_en = "Auto (Horizontal)"
@@ -493,7 +464,6 @@ with col1:
     st.markdown("---")
     st.header("💾 Configuration Management")
     
-    # Save Section
     save_name = st.text_input("Name this Cargo Mix to save (e.g., 'Weekly Order A')")
     if st.button("💾 Save Current Mix", use_container_width=True):
         if save_name and st.session_state.cargo_items:
@@ -502,9 +472,8 @@ with col1:
         else:
             st.error("Enter a name and add items to the list first.")
             
-    st.write("") # Small spacing
+    st.write("") 
     
-    # Load / Share Section
     configs = load_configs()
     if configs:
         selected_mix = st.selectbox("📂 Load or Share a saved mix", ["-- Select a mix --"] + list(configs.keys()))
@@ -516,6 +485,7 @@ with col1:
                     st.session_state.cargo_items = configs[selected_mix]['items']
                     for item in st.session_state.cargo_items:
                         st.session_state.color_map[item['Reference']] = item.get('Color', '#333333')
+                    st.session_state.optimization_done = False
                     st.rerun()
                 else:
                     st.error("Please select a mix first.")
@@ -529,12 +499,10 @@ with col1:
     else:
         st.info("No saved configurations available yet.")
 
-    # --- LIBRARY EDITOR ---
     st.markdown("---")
     with st.expander("⚙️ Library Editor (Edit / Delete products)"):
         lib_data = []
         for k, v in st.session_state.product_lib.items():
-            # Apply backward compatibility here as well
             rot_raw = v.get("Rotation", "Auto (Horizontal)")
             if rot_raw in ["Horizontale", "Horizontal", "Auto (Horizontal)"]: rot_en = "Auto (Horizontal)"
             elif rot_raw in ["Toutes", "All", "Auto (All)"]: rot_en = "Auto (All)"
@@ -608,7 +576,6 @@ with col2:
         }
     )
     
-    # Sync edited state back
     updated_items = edited_df.to_dict('records')
     st.session_state.cargo_items = updated_items
     for item in updated_items:
@@ -616,6 +583,7 @@ with col2:
             st.session_state.color_map[item['Reference']] = item['Color']
 
     st.header("4. Optimization Result")
+    
     if st.button("🚀 Calculate and display fleet", type="primary", use_container_width=True):
         if not st.session_state.cargo_items:
             st.warning("Please add cargo items.")
@@ -693,43 +661,35 @@ with col2:
                             unpacked_items_list.append(stack_item)
                     b.items = unpacked_items_list
                     final_used_bins.append(b)
-                used_bins = final_used_bins
-
-                # Unpacking refused items
-                final_unfitted = []
-                for stack_item in unpacked_items:
-                    orig_q = getattr(stack_item, 'original_qty', 1)
-                    base_name = stack_item.name.split(" #Stack")[0]
-                    if orig_q > 1:
-                        orig_h = getattr(stack_item, 'original_height')
-                        orig_w = getattr(stack_item, 'original_weight')
-                        for idx in range(orig_q):
-                            single = CustomItem(f"{base_name} #{idx+1}", Decimal(str(stack_item.width)), Decimal(str(stack_item.height)), orig_h, orig_w, allowed_rotations=stack_item.allowed_rotations, stackable=stack_item.stackable)
-                            final_unfitted.append(single)
-                    else:
-                        if " #Stack" in stack_item.name:
-                            stack_item.name = f"{base_name} #1"
-                        final_unfitted.append(stack_item)
-                unpacked_items = final_unfitted
-
-                # --- RENDER RESULTS ---
-                st.success(f"✅ Optimization complete! {len(used_bins)} vehicle(s) used.")
                 
-                # Setup PDF Export
-                pdf_path = generate_pdf_report(st.session_state.cargo_items, used_bins, c_props)
-                if pdf_path:
-                    with open(pdf_path, "rb") as pdf_file:
-                        st.download_button(label="📄 Download PDF Report", data=pdf_file, file_name="cargo_report.pdf", mime="application/pdf")
-                
-                for b in used_bins:
-                    total_vol = float(b.width * b.height * b.depth)
-                    used_vol = sum([float(i.width * i.height * i.depth) for i in b.items])
-                    fill_rate = (used_vol / total_vol) * 100 if total_vol > 0 else 0
-                    
-                    # Calculate measurements
-                    max_x_occupied = max([float(i.position[0]) + float(i.get_dimension()[0]) for i in b.items]) if b.items else 0
-                    rem_x = float(b.width) - max_x_occupied
-                    
-                    st.markdown(f"### 🚛 {b.name} (Filled at {fill_rate:.1f}%)")
-                    st.caption(f"📏 **Used Length:** {max_x_occupied:.1f} cm | **Remaining Space:** {rem_x:.1f} cm")
-                    st.plotly_chart(plot_3d_packing((c_props["L"], c_props["W"], c_props["H"]), b.items, st.session_state.color_map, f"3D View - {b.name}"), use_container_width=True)
+                # Save to session state so it doesn't disappear when uploading images
+                st.session_state.used_bins = final_used_bins
+                st.session_state.optimization_done = True
+                st.success(f"✅ Optimization complete! {len(final_used_bins)} vehicle(s) used.")
+
+    # Affichage des résultats persistant
+    if st.session_state.get('optimization_done', False):
+        
+        for b in st.session_state.used_bins:
+            total_vol = float(b.width * b.height * b.depth)
+            used_vol = sum([float(i.width * i.height * i.depth) for i in b.items])
+            fill_rate = (used_vol / total_vol) * 100 if total_vol > 0 else 0
+            
+            max_x_occupied = max([float(i.position[0]) + float(i.get_dimension()[0]) for i in b.items]) if b.items else 0
+            rem_x = float(b.width) - max_x_occupied
+            
+            st.markdown(f"### 🚛 {b.name} (Filled at {fill_rate:.1f}%)")
+            st.caption(f"📏 **Used Length:** {max_x_occupied:.1f} cm | **Remaining Space:** {rem_x:.1f} cm")
+            st.plotly_chart(plot_3d_packing((c_props["L"], c_props["W"], c_props["H"]), b.items, st.session_state.color_map, f"3D View - {b.name}"), use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("📄 Export PDF Report")
+        st.info("💡 **Subterfuge pour le PDF :** Survolez les graphiques 3D ci-dessus, cliquez sur l'icône 📷 (appareil photo) pour les télécharger en PNG. Ensuite, glissez-les simplement dans la boîte ci-dessous !")
+        
+        uploaded_imgs = st.file_uploader("Ajouter les captures 3D au PDF (Optionnel)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+        
+        if st.button("📥 Générer & Télécharger le PDF final", use_container_width=True):
+            pdf_path = generate_pdf_report(st.session_state.cargo_items, st.session_state.used_bins, c_props, uploaded_imgs)
+            if pdf_path:
+                with open(pdf_path, "rb") as pdf_file:
+                    st.download_button(label="📄 Cliquez ici pour télécharger votre rapport", data=pdf_file, file_name="cargo_report_with_images.pdf", mime="application/pdf")

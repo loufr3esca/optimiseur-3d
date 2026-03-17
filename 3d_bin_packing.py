@@ -216,7 +216,7 @@ def pack_with_rules(bin_obj, item, euro_slots):
                     d = item.get_dimension()
                     if abs(float(d[0]) - slot['w']) <= 1 and abs(float(d[1]) - slot['h']) <= 1:
                         
-                        # --- NEW: Vérification stricte des collisions pour la grille Europalette ---
+                        # --- Vérification stricte des collisions pour la grille Europalette ---
                         collision = False
                         p0, p1, p2 = Decimal(str(slot['x'])), Decimal(str(slot['y'])), Decimal('0')
                         w_d, h_d, d_d = d
@@ -232,6 +232,21 @@ def pack_with_rules(bin_obj, item, euro_slots):
                                     collision = True; break
                         
                         if not collision:
+                            # --- NOUVEAU : Glissement (Gravity Slide) vers l'avant (Axe X) ---
+                            # Permet de supprimer les espaces vides quand le chargement précédent n'est pas aligné sur la grille.
+                            min_x = Decimal('0')
+                            for p_item in bin_obj.items:
+                                pw, ph, pd = p_item.get_dimension()
+                                px, py, pz = p_item.position
+                                # Vérifie si les articles sont sur la même "ligne" Y et Z
+                                if not (p1 >= py+ph or p1+h_d <= py or p2 >= pz+pd or p2+d_d <= pz):
+                                    # Si l'article existant est devant l'emplacement prévu sur l'axe X
+                                    if px + pw <= p0:
+                                        min_x = max(min_x, px + pw)
+                            
+                            # On écrase la coordonnée X fixe par la nouvelle coordonnée glissée
+                            p0 = min_x
+                            
                             item.position = (p0, p1, p2)
                             bin_obj.items.append(item)
                             assigned = True

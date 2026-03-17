@@ -394,36 +394,43 @@ with col1:
                 st.error("Please enter a reference.")
 
     st.markdown("---")
-    st.header("💾 Save & Share Configuration")
-    mix_name = st.text_input("Name this Cargo Mix (e.g., 'Weekly Order A')")
-    c_s, c_l, c_sh = st.columns(3)
+    st.header("💾 Configuration Management")
     
-    with c_s:
-        if st.button("Save Mix"):
-            if mix_name and st.session_state.cargo_items:
-                save_config(mix_name, st.session_state.cargo_items)
-                st.success("Mix Saved!")
-            else:
-                st.error("Enter a name and add items.")
-                
-    with c_l:
-        configs = load_configs()
-        if st.button("Load Mix"):
-            if mix_name in configs:
-                st.session_state.cargo_items = configs[mix_name]['items']
-                for item in st.session_state.cargo_items:
-                    st.session_state.color_map[item['Reference']] = item.get('Color', '#333333')
-                st.rerun()
-            else:
-                st.error("Mix not found.")
-                
-    with c_sh:
-        if st.button("Share Link"):
-            if mix_name in configs:
-                BASE_URL = "https://optimiseur-3d-frozenbytes.streamlit.app/"
-                st.info(f"Send this link to your friend:\n\n**{BASE_URL}?config={urllib.parse.quote(mix_name)}**")
-            else:
-                st.error("Save the mix first.")
+    # Save Section
+    save_name = st.text_input("Name this Cargo Mix to save (e.g., 'Weekly Order A')")
+    if st.button("💾 Save Current Mix", use_container_width=True):
+        if save_name and st.session_state.cargo_items:
+            save_config(save_name, st.session_state.cargo_items)
+            st.success(f"Mix '{save_name}' Saved successfully!")
+        else:
+            st.error("Enter a name and add items to the list first.")
+            
+    st.write("") # Small spacing
+    
+    # Load / Share Section
+    configs = load_configs()
+    if configs:
+        selected_mix = st.selectbox("📂 Load or Share a saved mix", ["-- Select a mix --"] + list(configs.keys()))
+        c_l, c_sh = st.columns(2)
+        
+        with c_l:
+            if st.button("📂 Load Mix", use_container_width=True):
+                if selected_mix != "-- Select a mix --":
+                    st.session_state.cargo_items = configs[selected_mix]['items']
+                    for item in st.session_state.cargo_items:
+                        st.session_state.color_map[item['Reference']] = item.get('Color', '#333333')
+                    st.rerun()
+                else:
+                    st.error("Please select a mix first.")
+        with c_sh:
+            if st.button("🔗 Share Link", use_container_width=True):
+                if selected_mix != "-- Select a mix --":
+                    BASE_URL = "https://optimiseur-3d-frozenbytes.streamlit.app/"
+                    st.info(f"Send this link to your friend:\n\n**{BASE_URL}?config={urllib.parse.quote(selected_mix)}**")
+                else:
+                    st.error("Please select a mix first.")
+    else:
+        st.info("No saved configurations available yet.")
 
     # --- LIBRARY EDITOR ---
     st.markdown("---")
